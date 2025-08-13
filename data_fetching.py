@@ -291,12 +291,16 @@ def add_lags(bbos_df, lags):
 
 
 def backtest_fills(
-    directory: str, coin_filter: list[str] | None = None
+    directory: str, coin_filter: list[str] | None = None, max_rows: int = 50000
 ) -> pd.DataFrame:
     file_path = os.path.join(directory, "fills.jsonl")
     fills_list = []
+    row = 0
     with open(file_path, "r") as f:
         for line in f:
+            if row >= max_rows:
+                break
+            row += 1
             data = json.loads(line.strip())
             user = data.get("user")
             for fill in data.get("fills", []):
@@ -321,15 +325,22 @@ def backtest_fills(
 
 
 def backtest_orders(
-    directory: str, coin_filter: list[str] | None = None, include_meta: bool = False
+    directory: str,
+    coin_filter: list[str] | None = None,
+    include_meta: bool = False,
+    max_rows: int = 50000,
 ) -> pd.DataFrame:
     orders_file_path = os.path.join(directory, "orders.jsonl")
     order_meta_file_path = os.path.join(directory, "order_meta.jsonl")
 
     # Read orders
     orders_list = []
+    row = 0
     with open(orders_file_path, "r") as f:
         for line in f:
+            if row >= max_rows:
+                break
+            row += 1
             data = json.loads(line.strip())
             order_inner = data["order"]["order"]
             order_dict = {
@@ -354,8 +365,12 @@ def backtest_orders(
 
     if include_meta:
         meta_list = []
+        row = 0
         with open(order_meta_file_path, "r") as f:
             for line in f:
+                if row >= max_rows:
+                    break
+                row += 1
                 data = json.loads(line.strip())
                 float_dict = {k: v for k, v in data.get("float_values", [])}
                 timestamp_dict = {k: v for k, v in data.get("timestamp_values", [])}
@@ -379,10 +394,11 @@ def backtest_orders(
 
 
 def backtest_strategy_info(
-    directory: str, strategy_name_filter: list[str] | None = None
+    directory: str, strategy_name_filter: list[str] | None = None, max_rows: int = 50000
 ) -> pd.DataFrame:
     file_path = os.path.join(directory, "strategy_info.jsonl")
     info_list = []
+    row = 0
     with open(file_path, "r") as f:
         for line in f:
             data = json.loads(line.strip())
@@ -392,28 +408,39 @@ def backtest_strategy_info(
             if not info_dict:
                 continue
             strategy_type = list(info_dict.keys())[0]
+            if strategy_name_filter is not None:
+                if strategy_name not in strategy_name_filter:
+                    continue
             inner = info_dict[strategy_type].copy()
             inner["strategy_type"] = strategy_type
             inner["strategy_name"] = strategy_name
             info_list.append(inner)
+            row += 1
+            if row >= max_rows:
+                break
+
     df = pd.DataFrame(info_list)
     if df.empty:
         return df
     df["time"] = pd.to_datetime(df["time"], format="ISO8601")
-    if strategy_name_filter is not None:
-        df = df[df["strategy_name"].isin(strategy_name_filter)]
     df = df.sort_values(by="time")
     return df
 
 
 def backtest_theos(
-    directory: str, coin_filter: list[str] | None = None
+    directory: str, coin_filter: list[str] | None = None, max_rows: int = 50000
 ) -> pd.DataFrame:
     file_path = os.path.join(directory, "theo.jsonl")
     theos_list = []
+    row = 0
     with open(file_path, "r") as f:
         for line in f:
             data = json.loads(line.strip())
+            if coin_filter and data["friendly_coin"] not in coin_filter:
+                continue
+            row += 1
+            if row >= max_rows:
+                break
             float_dict = {k: v for k, v in data.get("float_values", [])}
             data.update(float_dict)
             del data["float_values"]
@@ -428,11 +455,15 @@ def backtest_theos(
     return df
 
 
-def backtest_ws_requests(directory: str) -> pd.DataFrame:
+def backtest_ws_requests(directory: str, max_rows: int = 50000) -> pd.DataFrame:
     file_path = os.path.join(directory, "ws_request.jsonl")
     requests_list = []
+    row = 0
     with open(file_path, "r") as f:
         for line in f:
+            if row >= max_rows:
+                break
+            row += 1
             data = json.loads(line.strip())
             requests_list.append(data)
     df = pd.DataFrame(requests_list)
