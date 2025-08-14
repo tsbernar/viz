@@ -437,28 +437,46 @@ def backtest_theos(
     directory: str, coin_filter: list[str] | None = None, max_rows: int = 50000
 ) -> pd.DataFrame:
     file_path = os.path.join(directory, "theo.jsonl")
+    
+    # Use set for O(1) lookups
+    coin_set = set(coin_filter) if coin_filter else None
+    
+    # Read and parse in chunks for better memory usage
     theos_list = []
     row = 0
     with open(file_path, "r") as f:
         for line in f:
-            data = json.loads(line.strip())
-            if coin_filter and data["friendly_coin"] not in coin_filter:
-                continue
-            row += 1
             if row >= max_rows:
                 break
-            float_dict = {k: v for k, v in data.get("float_values", [])}
-            data.update(float_dict)
-            del data["float_values"]
+                
+            # Parse JSON once
+            data = json.loads(line.strip())
+            
+            # Early filtering with set lookup (O(1) vs O(n))
+            if coin_set and data.get("friendly_coin") not in coin_set:
+                continue
+            
+            row += 1
+            
+            # More efficient dict update
+            if "float_values" in data:
+                float_dict = dict(data["float_values"])
+                del data["float_values"]
+                data.update(float_dict)
+            
             theos_list.append(data)
+    
+    if not theos_list:
+        return pd.DataFrame()
+    
+    # Create DataFrame once with all data
     df = pd.DataFrame(theos_list)
-    if df.empty:
-        return df
+    
+    # Vectorized datetime conversion
     df["time"] = pd.to_datetime(df["time"], unit="ns")
-    if coin_filter:
-        df = df[df["friendly_coin"].isin(coin_filter)]
-    df = df.sort_values(by="time")
-    return df
+    
+    # Sort and return
+    return df.sort_values(by="time")
 
 
 def backtest_ws_requests(directory: str, max_rows: int = 50000) -> pd.DataFrame:
