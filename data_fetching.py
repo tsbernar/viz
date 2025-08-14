@@ -332,6 +332,7 @@ def backtest_orders(
 ) -> pd.DataFrame:
     orders_file_path = os.path.join(directory, "orders.jsonl")
     order_meta_file_path = os.path.join(directory, "order_meta.jsonl")
+    cloids = set()
 
     # Read orders
     orders_list = []
@@ -356,22 +357,27 @@ def backtest_orders(
                 "status": data["order"]["status"],
                 "status_timestamp": int(data["order"]["statusTimestamp"]),
             }
+            cloids.add(order_dict["cloid"])
             orders_list.append(order_dict)
+
     if not orders_list:
         return pd.DataFrame()
+    
     df = pd.DataFrame(orders_list)
     df["time"] = pd.to_datetime(df["timestamp"], unit="ms")
     df["status_time"] = pd.to_datetime(df["status_timestamp"], unit="ms")
-
+    
     if include_meta:
         meta_list = []
         row = 0
         with open(order_meta_file_path, "r") as f:
             for line in f:
+                data = json.loads(line.strip())
+                if data['cloid'] not in cloids:
+                    continue
                 if row >= max_rows:
                     break
                 row += 1
-                data = json.loads(line.strip())
                 float_dict = {k: v for k, v in data.get("float_values", [])}
                 timestamp_dict = {k: v for k, v in data.get("timestamp_values", [])}
                 string_dict = {k: v for k, v in data.get("string_values", [])}
@@ -386,7 +392,7 @@ def backtest_orders(
             df_meta = pd.DataFrame(meta_list)
             df_meta["meta_time"] = pd.to_datetime(df_meta["time"], format="ISO8601")
             df = pd.merge(df, df_meta, on="cloid", how="left", suffixes=("", "_meta"))
-
+        
     if coin_filter:
         df = df[df["coin"].isin(coin_filter)]
     df = df.sort_values(by="time")

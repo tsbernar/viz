@@ -29,6 +29,7 @@ def add_fills_to_fig(fig, fills_df):
         tooltips=[
             ("time", "@time{%F %T}"),  # formatted datetime
             ("px", "@px{0.0000}"),
+            ("coin", "@coin"),
             ("sz", "@sz{0.00}"),
             ("side", "@side"),
             ("strategy_name", "@strategy_name"),
