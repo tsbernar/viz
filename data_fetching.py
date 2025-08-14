@@ -437,26 +437,26 @@ def backtest_theos(
     directory: str, coin_filter: list[str] | None = None, max_rows: int = 50000
 ) -> pd.DataFrame:
     file_path = os.path.join(directory, "theo.jsonl")
-    theos_list = []
-    row = 0
-    with open(file_path, "r") as f:
-        for line in f:
-            data = json.loads(line.strip())
-            if coin_filter and data["friendly_coin"] not in coin_filter:
-                continue
-            row += 1
-            if row >= max_rows:
-                break
-            float_dict = {k: v for k, v in data.get("float_values", [])}
-            data.update(float_dict)
-            del data["float_values"]
-            theos_list.append(data)
-    df = pd.DataFrame(theos_list)
+    
+    # Read with pyarrow engine for better performance
+    df = pd.read_json(file_path, lines=True, engine="pyarrow", nrows=max_rows)
+    
     if df.empty:
         return df
-    df["time"] = pd.to_datetime(df["time"], unit="ns")
+    
+    # Expand float_values into columns
+    if "float_values" in df.columns:
+        float_values_expanded = df["float_values"].apply(
+            lambda x: {k: v for k, v in x} if x else {}
+        )
+        float_df = pd.DataFrame(float_values_expanded.tolist())
+        df = pd.concat([df.drop("float_values", axis=1), float_df], axis=1)
+    
+    # Apply coin filter before further processing
     if coin_filter:
         df = df[df["friendly_coin"].isin(coin_filter)]
+    
+    df["time"] = pd.to_datetime(df["time"], unit="ns")
     df = df.sort_values(by="time")
     return df
 
