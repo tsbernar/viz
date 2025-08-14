@@ -294,22 +294,26 @@ def backtest_fills(
     directory: str, coin_filter: list[str] | None = None, max_rows: int = 50000
 ) -> pd.DataFrame:
     file_path = os.path.join(directory, "fills.jsonl")
+    
+    # Read with pyarrow engine for better performance
+    df = pd.read_json(file_path, lines=True, engine="pyarrow", nrows=max_rows)
+    
+    if df.empty:
+        return df
+    
+    # Flatten the nested structure - expand fills with user info
     fills_list = []
-    row = 0
-    with open(file_path, "r") as f:
-        for line in f:
-            if row >= max_rows:
-                break
-            row += 1
-            data = json.loads(line.strip())
-            user = data.get("user")
-            for fill in data.get("fills", []):
-                fill_dict = fill.copy()
-                fill_dict["user"] = user
-                fills_list.append(fill_dict)
+    for _, row in df.iterrows():
+        user = row.get("user")
+        for fill in row.get("fills", []):
+            fill_dict = fill.copy()
+            fill_dict["user"] = user
+            fills_list.append(fill_dict)
+    
     df = pd.DataFrame(fills_list)
     if df.empty:
         return df
+        
     df["time"] = pd.to_datetime(df["time"], unit="ms")
     df["oid"] = df["oid"].astype("int64")
     df["tid"] = df["tid"].astype("int64")
@@ -332,34 +336,34 @@ def backtest_orders(
 ) -> pd.DataFrame:
     orders_file_path = os.path.join(directory, "orders.jsonl")
     order_meta_file_path = os.path.join(directory, "order_meta.jsonl")
-    cloids = set()
-
-    # Read orders
+    
+    # Read orders with pyarrow engine
+    df = pd.read_json(orders_file_path, lines=True, engine="pyarrow", nrows=max_rows)
+    
+    if df.empty:
+        return df
+    
+    # Extract nested order data
     orders_list = []
-    row = 0
-    with open(orders_file_path, "r") as f:
-        for line in f:
-            if row >= max_rows:
-                break
-            row += 1
-            data = json.loads(line.strip())
-            order_inner = data["order"]["order"]
-            order_dict = {
-                "address": data["address"],
-                "cloid": order_inner["cloid"],
-                "coin": order_inner["coin"],
-                "limit_px": float(order_inner["limitPx"]),
-                "oid": int(order_inner["oid"]),
-                "orig_sz": float(order_inner["origSz"]),
-                "side": order_inner["side"],
-                "sz": float(order_inner["sz"]),
-                "timestamp": int(order_inner["timestamp"]),
-                "status": data["order"]["status"],
-                "status_timestamp": int(data["order"]["statusTimestamp"]),
-            }
-            cloids.add(order_dict["cloid"])
-            orders_list.append(order_dict)
-
+    cloids = set()
+    for _, row in df.iterrows():
+        order_inner = row["order"]["order"]
+        order_dict = {
+            "address": row["address"],
+            "cloid": order_inner["cloid"],
+            "coin": order_inner["coin"],
+            "limit_px": float(order_inner["limitPx"]),
+            "oid": int(order_inner["oid"]),
+            "orig_sz": float(order_inner["origSz"]),
+            "side": order_inner["side"],
+            "sz": float(order_inner["sz"]),
+            "timestamp": int(order_inner["timestamp"]),
+            "status": row["order"]["status"],
+            "status_timestamp": int(row["order"]["statusTimestamp"]),
+        }
+        cloids.add(order_dict["cloid"])
+        orders_list.append(order_dict)
+    
     if not orders_list:
         return pd.DataFrame()
     
@@ -368,31 +372,24 @@ def backtest_orders(
     df["status_time"] = pd.to_datetime(df["status_timestamp"], unit="ms")
     
     if include_meta:
-        meta_list = []
-        row = 0
-        with open(order_meta_file_path, "r") as f:
-            for line in f:
-                data = json.loads(line.strip())
-                if data['cloid'] not in cloids:
-                    continue
-                if row >= max_rows:
-                    break
-                row += 1
-                float_dict = {k: v for k, v in data.get("float_values", [])}
-                timestamp_dict = {k: v for k, v in data.get("timestamp_values", [])}
-                string_dict = {k: v for k, v in data.get("string_values", [])}
-                data.update(float_dict)
-                data.update(timestamp_dict)
-                data.update(string_dict)
-                del data["float_values"]
-                del data["timestamp_values"]
-                del data["string_values"]
-                meta_list.append(data)
-        if meta_list:
-            df_meta = pd.DataFrame(meta_list)
-            df_meta["meta_time"] = pd.to_datetime(df_meta["time"], format="ISO8601")
-            df = pd.merge(df, df_meta, on="cloid", how="left", suffixes=("", "_meta"))
+        # Read order meta with pyarrow
+        df_meta = pd.read_json(order_meta_file_path, lines=True, engine="pyarrow", nrows=max_rows)
         
+        if not df_meta.empty:
+            # Filter to matching cloids
+            df_meta = df_meta[df_meta["cloid"].isin(cloids)]
+            
+            # Expand value columns
+            for col, col_name in [("float_values", "float"), ("timestamp_values", "timestamp"), ("string_values", "string")]:
+                if col in df_meta.columns:
+                    expanded = df_meta[col].apply(lambda x: {k: v for k, v in x} if x else {})
+                    expanded_df = pd.DataFrame(expanded.tolist())
+                    df_meta = pd.concat([df_meta.drop(col, axis=1), expanded_df], axis=1)
+            
+            if "time" in df_meta.columns:
+                df_meta["meta_time"] = pd.to_datetime(df_meta["time"], format="ISO8601")
+            df = pd.merge(df, df_meta, on="cloid", how="left", suffixes=("", "_meta"))
+    
     if coin_filter:
         df = df[df["coin"].isin(coin_filter)]
     df = df.sort_values(by="time")
@@ -403,28 +400,34 @@ def backtest_strategy_info(
     directory: str, strategy_name_filter: list[str] | None = None, max_rows: int = 50000
 ) -> pd.DataFrame:
     file_path = os.path.join(directory, "strategy_info.jsonl")
+    
+    # Read with pyarrow engine
+    df = pd.read_json(file_path, lines=True, engine="pyarrow", nrows=max_rows)
+    
+    if df.empty:
+        return df
+    
+    # Process the data structure
     info_list = []
-    row = 0
-    with open(file_path, "r") as f:
-        for line in f:
-            data = json.loads(line.strip())
-            if len(data) != 2:
+    for _, row in df.iterrows():
+        # Each row should be a list with 2 elements
+        if not isinstance(row.iloc[0], list) or len(row.iloc[0]) != 2:
+            continue
+        
+        info_dict, strategy_name = row.iloc[0]
+        if not info_dict:
+            continue
+            
+        strategy_type = list(info_dict.keys())[0]
+        if strategy_name_filter is not None:
+            if strategy_name not in strategy_name_filter:
                 continue
-            info_dict, strategy_name = data
-            if not info_dict:
-                continue
-            strategy_type = list(info_dict.keys())[0]
-            if strategy_name_filter is not None:
-                if strategy_name not in strategy_name_filter:
-                    continue
-            inner = info_dict[strategy_type].copy()
-            inner["strategy_type"] = strategy_type
-            inner["strategy_name"] = strategy_name
-            info_list.append(inner)
-            row += 1
-            if row >= max_rows:
-                break
-
+                
+        inner = info_dict[strategy_type].copy()
+        inner["strategy_type"] = strategy_type
+        inner["strategy_name"] = strategy_name
+        info_list.append(inner)
+    
     df = pd.DataFrame(info_list)
     if df.empty:
         return df
@@ -463,18 +466,13 @@ def backtest_theos(
 
 def backtest_ws_requests(directory: str, max_rows: int = 50000) -> pd.DataFrame:
     file_path = os.path.join(directory, "ws_request.jsonl")
-    requests_list = []
-    row = 0
-    with open(file_path, "r") as f:
-        for line in f:
-            if row >= max_rows:
-                break
-            row += 1
-            data = json.loads(line.strip())
-            requests_list.append(data)
-    df = pd.DataFrame(requests_list)
+    
+    # Read with pyarrow engine for better performance
+    df = pd.read_json(file_path, lines=True, engine="pyarrow", nrows=max_rows)
+    
     if df.empty:
         return df
+    
     if "response_capture_time" in df.columns:
         df["response_capture_time"] = pd.to_datetime(
             df["response_capture_time"], unit="ns"
@@ -483,6 +481,10 @@ def backtest_ws_requests(directory: str, max_rows: int = 50000) -> pd.DataFrame:
     elif "submit_time" in df.columns:
         df["submit_time"] = pd.to_datetime(df["submit_time"], unit="ns")
         df = df.sort_values(by="submit_time")
+    
+    # Parse response column if it exists and contains JSON strings
     if "response" in df.columns:
-        df["response"] = df["response"].apply(json.loads)
+        df["response"] = df["response"].apply(
+            lambda x: json.loads(x) if isinstance(x, str) else x
+        )
     return df
