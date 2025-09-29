@@ -2,6 +2,71 @@ import pandas as pd
 import numpy as np
 import json
 import os
+from typing import Any
+
+
+def orders(
+    client, start_time, end_time, strategy_name, database="strategy"
+) -> pd.DataFrame:
+    start_time = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    end_time = end_time.strftime("%Y-%m-%d %H:%M:%S")
+    query = f"""SELECT 
+            coin,
+            friendly_coin,
+            status,
+            status_timestamp,
+            side,
+            toFloat64(sz) as sz,
+            toFloat64(orig_sz) as orig_sz,
+            toFloat64(limit_px) as limit_px,
+            time,
+            oid,
+            cloid,
+            capture_time,
+            strategy_name,
+            string_values,
+        FROM {database}.enriched_orders 
+        WHERE time > '{start_time}' AND time < '{end_time}' AND strategy_name = '{strategy_name}'
+        ORDER BY time
+        LIMIT 500000;"""
+    df = client.query_df(query)
+    df["time"] = pd.to_datetime(df["time"])
+    df = df.sort_values(by="time")
+    return df
+
+
+def info(
+    client, start_time, end_time, strategy_name, database="strategy"
+) -> pd.DataFrame:
+    start_time = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    end_time = end_time.strftime("%Y-%m-%d %H:%M:%S")
+    query = f"""SELECT * FROM {database}.info 
+        WHERE time > '{start_time}' AND time < '{end_time}' AND strategy_name = '{strategy_name}'
+        ORDER BY time
+        LIMIT 500000;"""
+    df = client.query_df(query)
+    df["time"] = pd.to_datetime(df["time"])
+    df = df.sort_values(by="time")
+    return df
+
+
+def fills(
+    client,
+    start_time: pd.Timestamp,
+    end_time: pd.Timestamp,
+    friendly_coins: list[str],
+    database="hyperliquid",
+) -> pd.DataFrame:
+    start_time = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    end_time = end_time.strftime("%Y-%m-%d %H:%M:%S")
+    query = f"""SELECT * FROM {database}.fills
+            WHERE time > '{start_time}'
+            AND time < '{end_time}'
+            AND friendly_coin IN ( '{"', '".join(friendly_coins)}' )"""
+    df = client.query_df(query)
+    df["time"] = pd.to_datetime(df["time"])
+    df = df.sort_values(by="time")
+    return df
 
 
 def tq_trades(
@@ -41,6 +106,90 @@ def tq_trades(
     return df
 
 
+def minute_books(
+    client,
+    start_time: pd.Timestamp,
+    end_time: pd.Timestamp,
+    friendly_coins: list[str],
+    limit: int = 5000000,
+) -> pd.DataFrame:
+    start_time = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    end_time = end_time.strftime("%Y-%m-%d %H:%M:%S")
+    query = f"""SELECT
+                    toStartOfMinute(b.time) + interval 1 minute as time,
+                    argMax(b.time, arrayMap(x -> toFloat64(x), bids_px)) AS bids_px,
+                    argMax(b.time, arrayMap(x -> toFloat64(x), asks_px)) AS asks_px,
+                    argMax(b.time, arrayMap(x -> toFloat64(x), bids_sz)) AS bids_sz,
+                    argMax(b.time, arrayMap(x -> toFloat64(x), asks_sz)) AS asks_sz,
+                    argMax(b.time, bids_n) AS bids_n,
+                    argMax(b.time, asks_n) AS asks_n,
+                    friendly_coin
+                FROM hyperliquid.l2_book b
+                WHERE time > '{start_time}'
+                    AND time < '{end_time}'
+                    AND friendly_coin IN ( '{"', '".join(friendly_coins)}' )
+                ORDER BY capture_time DESC, time
+                LIMIT 1 BY (friendly_coin, time)
+                LIMIT {limit};"""
+
+    df = client.query_df(query)
+    df["time"] = pd.to_datetime(df["time"])
+    df["bid_px"] = df["bid_px"].astype(float)
+    df["ask_px"] = df["ask_px"].astype(float)
+    df = df.sort_values(by="time")
+    return df
+
+
+def minute_bbos(
+    client, start_time: pd.Timestamp, end_time: pd.Timestamp, friendly_coins: list[str]
+) -> pd.DataFrame:
+    start_time = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    end_time = end_time.strftime("%Y-%m-%d %H:%M:%S")
+
+    query = f"""SELECT
+            toStartOfMinute(time) + interval 1 minute as time,
+            friendly_coin,
+            last_value(bid_px) as bid_px,
+            last_value(ask_px) as ask_px
+        FROM hyperliquid.bbo
+            WHERE time > '{start_time}'
+            AND time < '{end_time}'
+            AND friendly_coin IN ( '{"', '".join(friendly_coins)}' )
+            GROUP BY time, friendly_coin
+            ORDER BY time
+            LIMIT 5000000;"""
+
+    df = client.query_df(query)
+    df["time"] = pd.to_datetime(df["time"])
+    df = df.sort_values(by="time")
+    return df
+
+
+def second_bbos(
+    client, start_time: pd.Timestamp, end_time: pd.Timestamp, friendly_coins: list[str]
+) -> pd.DataFrame:
+    start_time = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    end_time = end_time.strftime("%Y-%m-%d %H:%M:%S")
+
+    query = f"""SELECT
+            toStartOfSecond(time) + interval 1 second as time,
+            friendly_coin,
+            last_value(bid_px) as bid_px,
+            last_value(ask_px) as ask_px
+        FROM hyperliquid.bbo
+            WHERE time > '{start_time}'
+            AND time < '{end_time}'
+            AND friendly_coin IN ( '{"', '".join(friendly_coins)}' )
+            GROUP BY time, friendly_coin
+            ORDER BY time
+            LIMIT 5000000;"""
+
+    df = client.query_df(query)
+    df["time"] = pd.to_datetime(df["time"])
+    df = df.sort_values(by="time")
+    return df
+
+
 def minute_tobs(
     client, start_time: pd.Timestamp, end_time: pd.Timestamp, coins: list[str]
 ) -> pd.DataFrame:
@@ -48,7 +197,7 @@ def minute_tobs(
     end_time = end_time.strftime("%Y-%m-%d %H:%M:%S")
 
     query = f"""SELECT
-                    toStartOfMinute(time) as time,
+                    toStartOfMinute(time) + interval 1 minute as time,
                     last_value(bid_px) as bid_px,
                     last_value(ask_px) as ask_px,
                     friendly_coin
@@ -120,6 +269,54 @@ def tobs(
     return df
 
 
+def books(
+    client,
+    start_time: pd.Timestamp,
+    end_time: pd.Timestamp,
+    friendly_coins: list[str],
+    limit: int = 5000000,
+) -> pd.DataFrame:
+    start_time = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    end_time = end_time.strftime("%Y-%m-%d %H:%M:%S")
+    query = f"""SELECT friendly_coin,
+            capture_time,
+            time,
+            arrayMap(x -> toFloat64(x), bids_px) AS bids_px,
+            arrayMap(x -> toFloat64(x), asks_px) AS asks_px,
+            arrayMap(x -> toFloat64(x), bids_sz) AS bids_sz,
+            arrayMap(x -> toFloat64(x), asks_sz) AS asks_sz,
+            bids_n,
+            asks_n
+        FROM hyperliquid.l2_book
+          WHERE time > '{start_time}'
+            AND time < '{end_time}'
+            AND friendly_coin IN ( '{"', '".join(friendly_coins)}' )
+        ORDER BY capture_time DESC, time
+        LIMIT 1 BY (friendly_coin, time)
+        LIMIT {limit};"""
+
+    df = client.query_df(query)
+    df["time"] = pd.to_datetime(df["time"])
+    df = df.sort_values(by="time")
+    return df
+
+
+def liquidation_observations(client, start_time, end_time, coin, pct_away=2):
+    start_time = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    end_time = end_time.strftime("%Y-%m-%d %H:%M:%S")
+    query = f"""SELECT *, pct_away 
+            FROM hyperliquid.nearby_liquidations 
+            WHERE observation_time > '{start_time}'
+            AND observation_time < '{end_time}'
+            AND coin = '{coin}'
+            AND abs(pct_away) < {pct_away}
+            ORDER BY observation_time DESC
+            LIMIT 500000;"""
+    liqs = client.query_df(query)
+    liqs["ntl"] = abs(liqs["szi"] * liqs["liquidation_px"])
+    return liqs
+
+
 def bbos(
     client,
     start_time: pd.Timestamp,
@@ -152,12 +349,19 @@ def bbos(
     return df
 
 
+def perp_meta(client) -> dict[str, Any]:
+    return dict(
+        client.query_df("SELECT * FROM hyperliquid.perp_meta").set_index("name").T
+    )
+
+
 def trades(
     client,
     start_time: pd.Timestamp,
     end_time: pd.Timestamp,
     friendly_coins: list[str] | None = None,
     address: str | None = None,
+    limit: int = 7000000,
 ) -> pd.DataFrame:
     start_time_s = start_time.strftime("%Y-%m-%d %H:%M:%S")
     end_time_s = end_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -179,8 +383,7 @@ def trades(
 
     where_sql = " AND ".join(where)
 
-    query = f"""
-        SELECT
+    query = f"""SELECT
             friendly_coin,
             capture_time,
             time,
@@ -194,8 +397,7 @@ def trades(
         WHERE {where_sql}
         ORDER BY time
         LIMIT 1 BY (friendly_coin, time, tid)
-        LIMIT 7000000;
-    """
+        LIMIT {limit};"""
 
     df = client.query_df(query)
     df["sign"] = df["side"].apply(lambda x: 1 if x == "B" else -1)
@@ -362,18 +564,18 @@ def backtest_orders(
 
     if not orders_list:
         return pd.DataFrame()
-    
+
     df = pd.DataFrame(orders_list)
     df["time"] = pd.to_datetime(df["timestamp"], unit="ms")
     df["status_time"] = pd.to_datetime(df["status_timestamp"], unit="ms")
-    
+
     if include_meta:
         meta_list = []
         row = 0
         with open(order_meta_file_path, "r") as f:
             for line in f:
                 data = json.loads(line.strip())
-                if data['cloid'] not in cloids:
+                if data["cloid"] not in cloids:
                     continue
                 if row >= max_rows:
                     break
@@ -392,7 +594,7 @@ def backtest_orders(
             df_meta = pd.DataFrame(meta_list)
             df_meta["meta_time"] = pd.to_datetime(df_meta["time"], format="ISO8601")
             df = pd.merge(df, df_meta, on="cloid", how="left", suffixes=("", "_meta"))
-        
+
     if coin_filter:
         df = df[df["coin"].isin(coin_filter)]
     df = df.sort_values(by="time")
@@ -437,10 +639,10 @@ def backtest_theos(
     directory: str, coin_filter: list[str] | None = None, max_rows: int = 50000
 ) -> pd.DataFrame:
     file_path = os.path.join(directory, "theo.jsonl")
-    
+
     # Use set for O(1) lookups
     coin_set = set(coin_filter) if coin_filter else None
-    
+
     # Read and parse in chunks for better memory usage
     theos_list = []
     row = 0
@@ -448,33 +650,33 @@ def backtest_theos(
         for line in f:
             if row >= max_rows:
                 break
-                
+
             # Parse JSON once
             data = json.loads(line.strip())
-            
+
             # Early filtering with set lookup (O(1) vs O(n))
             if coin_set and data.get("friendly_coin") not in coin_set:
                 continue
-            
+
             row += 1
-            
+
             # More efficient dict update
             if "float_values" in data:
                 float_dict = dict(data["float_values"])
                 del data["float_values"]
                 data.update(float_dict)
-            
+
             theos_list.append(data)
-    
+
     if not theos_list:
         return pd.DataFrame()
-    
+
     # Create DataFrame once with all data
     df = pd.DataFrame(theos_list)
-    
+
     # Vectorized datetime conversion
     df["time"] = pd.to_datetime(df["time"], unit="ns")
-    
+
     # Sort and return
     return df.sort_values(by="time")
 
