@@ -26,12 +26,48 @@ def orders(
             strategy_name,
             string_values,
         FROM {database}.enriched_orders 
-        WHERE time > '{start_time}' AND time < '{end_time}' AND strategy_name = '{strategy_name}'
-        ORDER BY time
+        WHERE status_timestamp > '{start_time}' AND status_timestamp < '{end_time}' AND strategy_name = '{strategy_name}'
+        ORDER BY status_timestamp
         LIMIT 500000;"""
     df = client.query_df(query)
-    df["time"] = pd.to_datetime(df["time"])
-    df = df.sort_values(by="time")
+    df["status_timestamp"] = pd.to_datetime(df["status_timestamp"])
+    df = df.sort_values(by="status_timestamp")
+    return df
+
+
+def order_events(
+    client, start_time, end_time, strategy_name, database="strategy"
+) -> pd.DataFrame:
+    start_time = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    end_time = end_time.strftime("%Y-%m-%d %H:%M:%S")
+    query = f"""SELECT * FROM {database}.unified_orders(strategy='{strategy_name}', start_ts='{start_time}', end_ts='{end_time}')"""
+
+    df = client.query_df(query)
+    df["event_ts"] = pd.to_datetime(df["event_ts"])
+    df = df.sort_values(by="event_ts")
+    return df
+
+
+def lagged_returns(client, start_time, end_time, coin) -> pd.DataFrame:
+    start_time = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    end_time = end_time.strftime("%Y-%m-%d %H:%M:%S")
+    query = f"""SELECT * FROM tq.lagged_returns WHERE ts > '{start_time}' AND ts < '{end_time}' and coin = '{coin}'"""
+    df = client.query_df(query)
+    df["ts"] = pd.to_datetime(df["ts"])
+    df = df.sort_values(by="ts")
+    return df
+
+
+def open_position_summary(
+    client, start_time, end_time, coin, database="strategy"
+) -> pd.DataFrame:
+    start_time = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    end_time = end_time.strftime("%Y-%m-%d %H:%M:%S")
+    query = f"""SELECT * FROM {database}.open_position_summary FINAL WHERE open_time > '{start_time}' AND open_time < '{end_time}' and coin = '{coin}'"""
+    df = client.query_df(query)
+    df["open_time"] = pd.to_datetime(df["open_time"])
+    df["capture_time"] = pd.to_datetime(df["capture_time"])
+    df = df.sort_values(by="capture_time")
     return df
 
 
@@ -301,7 +337,9 @@ def books(
     return df
 
 
-def liquidation_observations(client, start_time, end_time, coin, pct_away=2):
+def liquidation_observations(
+    client, start_time, end_time, coin, pct_away=2, limit: int = 500000
+):
     start_time = start_time.strftime("%Y-%m-%d %H:%M:%S")
     end_time = end_time.strftime("%Y-%m-%d %H:%M:%S")
     query = f"""SELECT *, pct_away 
@@ -311,7 +349,7 @@ def liquidation_observations(client, start_time, end_time, coin, pct_away=2):
             AND coin = '{coin}'
             AND abs(pct_away) < {pct_away}
             ORDER BY observation_time DESC
-            LIMIT 500000;"""
+            LIMIT {limit};"""
     liqs = client.query_df(query)
     liqs["ntl"] = abs(liqs["szi"] * liqs["liquidation_px"])
     return liqs
